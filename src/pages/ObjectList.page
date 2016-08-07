@@ -14,12 +14,24 @@
         <script>
             var conn = new jsforce.Connection({accessToken: '{!$API.Session_Id}'});
 
+            /**
+            * Function to check if field type is supported for sync.
+            * Reference fields for example are not supported by SOQL queries thus not synced.
+            */
+            function isTypeofFieldSupported(field) {
+                // var notSupportedTypes = ['date', 'datetime', 'address'];
+                // if ( notSupportedTypes.indexOf(field.type) > -1 ) return false;
+                if ( field.type.indexOf('textarea') > -1 ) return false;
+                if ( field.type.indexOf('reference') > -1 ) return false;
+                return true;
+            }
+
             angular.module('objDescApp', ['ui.router', 'ui.bootstrap']);
 
             angular.module('objDescApp').config(['$stateProvider', '$urlRouterProvider', '$httpProvider', function ($stateProvider, $urlRouterProvider, $httpProvider) {
                 'use strict';
                 $urlRouterProvider.otherwise('/');
-               
+
 
                 $stateProvider
                 .state('main', {
@@ -94,21 +106,18 @@
                         /**
                         * Function to filter only supported type fields
                         */
-                        $scope.filterSupportedFieldsFn = function ( field )
-                        {
-                            var notSupportedTypes = ['date', 'datetime', 'address'];
-                            if ( notSupportedTypes.indexOf(field.type) > -1 ) return false;
-                            if ( field.type.indexOf('textarea') > -1 ) return false;
-                            
-                            return true;
+                        $scope.filterSupportedFieldsFn = function ( field ) {
+
+                            // no need to filter fields out as they are already filtered out in fillObjectFields
+                            return isTypeofFieldSupported(field);
+                            // return true;
                         }
 
-                       
                     });
                 });
 
                 $scope.fieldSyncChanged = function(object) {
-                    ConfigService.fieldSyncChanged(object, $stateParams.name); 
+                    ConfigService.fieldSyncChanged(object, $stateParams.name);
                 }
             }]);
 
@@ -117,11 +126,11 @@
             angular.module('objDescApp').controller('ObjectListCtrl', function ($scope, $state, ConfigService) {
                 'use strict';
                 $scope.loading_sidebar = true;
-                
+
                 conn.describeGlobal(function (error_describe, metadata) {
                     var configPromise = ConfigService.getConfig();
                     configPromise.then(function() {
-                        $scope.objects =  ConfigService.fillObjectsMetaDataWithSyncFields(metadata);
+                        $scope.objects = ConfigService.markSyncedObjectsInMetadata(metadata);
                         $scope.loading_sidebar = false;
                     });
                 });
@@ -141,8 +150,8 @@
                             $scope.saveError = false;
                             $scope.syncSaved = true;
                             $scope.loading_main = false;
-                        } 
-                        
+                        }
+
                     });
                 }
 
@@ -152,29 +161,30 @@
                 $scope.filterSupportedRecordsFn = function ( object )
                 {
                     var allowedObjects = ["Account", "Case", "Contact", "Lead", "Product"];
-                    if ( allowedObjects.indexOf(object.name) > -1 ) 
+                    if ( allowedObjects.indexOf(object.name) > -1 )
                         return true;
-                    
+
                     return false;
                 }
- 
+
             });
 
 
 /* ************************ConfigService ***********/
 
             angular.module('objDescApp').factory('ConfigService', function ($http, $rootScope) {
-                var jsonConf;     
+                var jsonConf;
                 var confTemplate = {"mappings": [], "connection":{"exported_at":"2016-01-27T13:22:16.003137+00:00","app_name":"connecttosfme","organization_id":"{!orgId}"},"version":1};
-                var endPointUrl = 'https://meexle-trigodda.rhcloud.com/uat/settings?tenantid={!orgId}';           
-                
+                // var endPointUrl = 'https://meexle-trigodda.rhcloud.com/uat/settings?tenantid={!orgId}';
+                var endPointUrl = 'https://localhost:8443/uat/settings?tenantid={!orgId}';
+
                 function  addObjectToConfig(objectName){
                    if(checkIfObjectExistsAtConfig(objectName)) return;
                     conn.describe(objectName, function (error_describe, metadata) {
                         var fields = metadata.fields;
                         var tmpFields = {} ;
                         for (var i=0;  i < fields.length; i++) {
-                            tmpFields[fields[i].name] = {};  
+                            tmpFields[fields[i].name] = {};
                         }
                         jsonConf.mappings.push({
                         "object_name": objectName,
@@ -183,7 +193,7 @@
                         }
 
                     });
-                   
+
 
                 })
 
@@ -195,7 +205,7 @@
                         }
                     }
                     return false;
-                
+
                 };
 
                 function removeObjectFromConfig (objectName){
@@ -251,10 +261,10 @@
                                                 }
                                             );
                 function getConfig() {
-                       //save httpPromise           
-                      
+                       //save httpPromise
+
                        //return promise
-                       return jsonConfPromise;  
+                       return jsonConfPromise;
                    };
 
                 return {
@@ -266,7 +276,7 @@
                             url: endPointUrl,
                             transformResponse: undefined,
                             headers: {
-                                'Content-Type': 'application/json' 
+                                'Content-Type': 'application/json'
                             },
                             data: JSON.stringify(jsonConf)
                         }
@@ -292,18 +302,29 @@
                         }
 
                     },
+
+                    /**
+                     * Read fields from server and mark fields in UI as being synced or not.
+                     * Also remove fields with unsupported type so they are not shown in UI and not sent to server.
+                     */
                     fillObjectFields: function(metadata){
                         // jsonConfPromise.then(function (jsonConf) {
                             if(checkIfObjectExistsAtConfig(metadata.name)){
-                                 for (var i=0;  i < jsonConf.mappings.length; i++) {
+                                 for (var i=0; i < jsonConf.mappings.length; i++) {
                                     var currObj = jsonConf.mappings[i];
                                     if(currObj.object_name == metadata.name){ // iterates over fields from config
                                         var fields = currObj.config.fields;
-                                        
+
                                          for (var field in fields) { // iterate over fields from json config
-                                            for (var j=0;  j < metadata.fields.length; j++) {
-                                                if(metadata.fields[j].name ==  field){
-                                                    metadata.fields[j].sync = true;
+                                            for (var j = 0; j < metadata.fields.length; j++) {
+                                                if(metadata.fields[j].name == field) {
+                                                    if (!isTypeofFieldSupported(metadata.fields[j])) {
+                                                        delete fields[field];
+                                                        metadata.fields.splice(j, 1); // delete array item
+                                                    } else {
+                                                        metadata.fields[j].sync = true;
+                                                    }
+                                                    break;
                                                 }
                                             }
                                         }
@@ -312,12 +333,12 @@
                             }
                             return metadata;
                     // });
-                       
+
                     },
-                    fillObjectsMetaDataWithSyncFields: function(metadata){
+                    markSyncedObjectsInMetadata: function(metadata) {
                         for (var i=0;  i < jsonConf.mappings.length; i++) {
                             var objName = jsonConf.mappings[i].object_name;
-                            
+
                             for(var j=0; j < metadata.sobjects.length; j++){
 
                                 if(objName == metadata.sobjects[j].name){
@@ -334,7 +355,7 @@
                 };
                 });
 
-   
+
         </script>
     </head>
     <body>
@@ -361,7 +382,7 @@
                         <button type="button" class="btn btn-default" ng-click="saveConfig()">Save</button>
                     </form>
                     <ul class="nav nav-sidebar">
-                        
+
                     <li ng-show="getConfigError"><div id="error-wrapper" style="color:red">Meexe Service offline,sync error.</div></li>
                         <li ng-show="saveError"><div id="error-wrapper" style="color:red">Saving config error</div></li>
                         <li ng-show="syncSaved"><div id="error-wrapper" style="color:blue">Settings was saved</div></li>
